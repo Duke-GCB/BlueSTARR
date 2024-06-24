@@ -1,21 +1,15 @@
 #!/usr/bin/env python
 #========================================================================
 # BlueSTARR Version 0.1
+#
 # Adapted from DeepSTARR by Bill Majoros (bmajoros@alumni.duke.edu)
+#
 #========================================================================
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 import gc
 import gzip
 import time
 import math
 import tensorflow as tf
-tf.autograph.set_verbosity(1)
-import logging
-logging.getLogger("tensorflow").setLevel(logging.ERROR)
-logging.getLogger('tensorflow').disabled = True
-from silence_tensorflow import silence_tensorflow
-silence_tensorflow()
 import keras
 import keras.layers as kl
 from keras.layers import Conv1D, MaxPooling1D, AveragePooling1D
@@ -31,15 +25,17 @@ import keras.backend as backend
 # from keras.backend import int_shape
 import pandas as pd
 import numpy as np
+import ProgramName
 import sys
+import IOHelper
+import SequenceHelper
 import random
 from scipy import stats
 from sklearn.metrics import mean_squared_error
 from scipy.stats import spearmanr
-import ProgramName
+from NeuralConfig import NeuralConfig
 from Rex import Rex
 rex=Rex()
-
 
 
 #========================================================================
@@ -51,7 +47,6 @@ NUM_RNA=None # number of RNA replicates
 #RANDOM_SEED=1234
 ALPHA={"A":0,"C":1,"G":2,"T":3}
 BATCH_SIZE=1
-tf.compat.v1.disable_eager_execution()
 
 #=========================================================================
 #                                main()
@@ -68,38 +63,72 @@ def main(infile,modelFilestem):
 
     # Load data
     IN=open(infile,"rt")
-    recs=[]
     for line in IN:
-        rec=line.rstrip().split()
-        if(len(rec)<6): continue
-        recs.append(rec)
-    X=oneHot(recs)
-    batchSize=len(recs)
-    pred=model.predict(X,batch_size=batchSize,verbose=0)
-    numRecs=len(recs)
-    for i in range(numRecs):
-        y=pred[i][0][0] #.numpy()
-        rec=recs[i]
-        (ID,actualInterval,pos,ref,allele,seq)=rec
-        print(ID,actualInterval,pos,ref,allele,y,sep="\t")
-        
+        fields=line.rstrip().split()
+        if(len(fields)<6): continue
+        ID=fields[0]; ref=fields[1]
+        if(not rex.find("ref=(.)",ref)):
+            raise Exception("Can't parse ref: "+ref)
+        ref=rex[1]
+        #alleles=[fields[2],fields[4],fields[6],fields[8]]
+        #seqs=[fields[3],fields[5],fields[7],fields[9]]
+        alleles=[]; seqs=[]
+        i=2
+        while(i<len(fields)):
+            alleles.append(fields[i])
+            seqs.append(fields[i+1])
+            i+=2
+        Y=[]
+        for seq in seqs:
+            X=oneHot(seq)
+            X=X.reshape((1,X.shape[0],X.shape[1]))
+            pred=model.predict(X,batch_size=1,verbose=0)
+            Y.append(pred[0][0][0])
+            del X
+        recs=getScores(ref,alleles,Y)
+        line=[ID]
+        for rec in recs: line.extend([str(x) for x in rec])
+        print("\t".join(line))
+        del recs; del fields; del line; del Y; del seqs; del alleles
+        del ref; del ID
+        gc.collect()
+
+    # Report elapsed time
+    #endTime=time.time()
+    #seconds=endTime-startTime
+    #minutes=seconds/60
+    #print("Elapsed time:",round(minutes,2),"minutes")
+
 #========================================================================
 #                               FUNCTIONS
 #========================================================================
-def oneHot(recs):
-    firstRec=recs[0]
-    (ID,actualInterval,pos,ref,allele,seq)=firstRec
+def oneHot(seq):
     L=len(seq)
-    numRecs=len(recs)
-    X=np.zeros((numRecs,L,4))
-    for j in range(numRecs):
-        rec=recs[j]
-        (ID,actualInterval,pos,ref,allele,seq)=rec
-        for i in range(L):
-            c=seq[i]
-            cat=ALPHA.get(c,-1)
-            if(cat>=0): X[j,i,cat]=1
+    X=np.zeros((L,4))
+    for i in range(L):
+        c=seq[i]
+        cat=ALPHA.get(c,-1)
+        if(cat>=0): X[i,cat]=1
     return X
+
+def findRef(ref,alleles):
+    n=len(alleles)
+    for i in range(n):
+        if(alleles[i]==ref): return i
+    raise Exception("Can't find ref allele")
+
+def getScores(ref,alleles,scores):
+    r=findRef(ref,alleles)
+    refScore=scores[r]
+    n=len(alleles)
+    recs=[]
+    for i in range(n):
+        if(i==r): continue
+        log2FC=scores[i]-refScore
+        log2FC=round(log2FC,2)
+        rec=[alleles[i],log2FC]
+        recs.append(rec)
+    return recs
 
 #=========================================================================
 #                         Command Line Interface
